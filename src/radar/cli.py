@@ -7,6 +7,8 @@ import os
 import sys
 from typing import List, Optional, Sequence
 
+from .budget import FULL, HARD_MAX, TARGET, est_tokens, fit, trimmed
+from .export import render_md, render_xml
 from .git import branches, is_repo, log, status_porcelain
 from .models import Event, Report
 from .signals.deletions import find_large_deletions
@@ -14,6 +16,17 @@ from .signals.deps import find_dep_changes
 from .signals.reverts import find_reverts
 from .signals.todos import find_todos
 from .timeline import build_timeline
+
+try:
+    import pyperclip
+except ImportError:  # pragma: no cover - depends on the environment
+
+    class _MissingClipboard:
+        @staticmethod
+        def copy(text: str) -> None:
+            raise RuntimeError("pyperclip is not installed")
+
+    pyperclip = _MissingClipboard()
 
 STALE_DAYS = 30
 DEFAULT_COMMITS = 30
@@ -125,6 +138,18 @@ def render_resume(report: Report) -> str:
     return "\n".join(lines)
 
 
+def _copy_summary(
+    size: int,
+    cap: int,
+    trimmed_items: List[str],
+    label: str = "Copied",
+) -> str:
+    line = f"{label}: ~{size} tokens (cap {cap:,})"
+    if trimmed_items:
+        line += " | trimmed: " + ", ".join(trimmed_items)
+    return line
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="radar",
@@ -142,6 +167,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=DEFAULT_COMMITS,
         help=f"commits to scan for TODOs (default: {DEFAULT_COMMITS})",
     )
+    parser.add_argument(
+        "--md",
+        action="store_true",
+        help="use a Markdown briefing instead of XML",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"token cap (default: {TARGET}, hard maximum {HARD_MAX})",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="skip trimming and print a size warning",
+    )
+    parser.add_argument(
+        "--no-copy",
+        action="store_true",
+        dest="no_copy",
+        help="do not copy the prompt to the clipboard",
+    )
     args = parser.parse_args(argv)
 
     cwd = os.path.abspath(args.path)
@@ -153,6 +201,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     report = build_report(cwd, args.commits)
     print(render_resume(report))
+
+    render = render_md if args.md else render_xml
+    requested = args.budget or TARGET
+    cap = min(requested, HARD_MAX)
+
+    if args.full:
+        text = render(report, FULL)
+        size = est_tokens(text)
+        trimmed_items: List[str] = []
+        print(
+            f"warning: --full bypasses the budget: "
+            f"~{size} tokens (cap {cap:,})"
+        )
+    else:
+        text, limits = fit(report, render, budget=requested)
+        size = est_tokens(text)
+        trimmed_items = trimmed(report, limits)
+        if size > cap:
+            print("warning: budget below minimum size")
+
+    if args.no_copy:
+        print(_copy_summary(size, cap, trimmed_items, label="Prompt"))
+        return 0
+
+    try:
+        pyperclip.copy(text)
+    except Exception:
+        print("clipboard unavailable, printing prompt:")
+        print(text)
+        print(_copy_summary(size, cap, trimmed_items, label="Prompt"))
+        return 0
+
+    print(_copy_summary(size, cap, trimmed_items))
     return 0
 
 

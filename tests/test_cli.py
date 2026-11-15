@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from radar import cli
 from radar.cli import (
     MAX_DECISIONS,
     STALE_DAYS,
@@ -9,7 +10,7 @@ from radar.cli import (
     main,
     render_resume,
 )
-from radar.models import Event, Report
+from radar.models import Event, FileChange, Report, Todo
 
 
 def test_main_prints_resume_here(repo, capsys):
@@ -106,3 +107,78 @@ def test_decisions_show_at_most_fifteen_and_keep_heaviest():
     assert len(shown) == MAX_DECISIONS
     assert "change 19" not in out
     assert shown[-1].endswith("| stop: stopped here [e] | -")
+
+
+def test_full_prints_a_size_warning(repo, capsys):
+    repo.commit("work", files={"app.py": "x = 1\n"})
+
+    code = main([str(repo.path), "--full", "--no-copy"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "warning:" in out
+    assert "--full" in out
+    assert "tokens" in out
+
+
+def test_clipboard_failure_falls_back_to_printing(repo, capsys, monkeypatch):
+    def unavailable(text):
+        raise RuntimeError("no clipboard backend")
+
+    monkeypatch.setattr(cli.pyperclip, "copy", unavailable)
+
+    code = main([str(repo.path)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "clipboard unavailable, printing prompt:" in out
+    assert "<project_handoff>" in out
+
+
+def test_successful_copy_prints_the_token_summary(repo, capsys, monkeypatch):
+    copied = []
+    monkeypatch.setattr(cli.pyperclip, "copy", copied.append)
+
+    code = main([str(repo.path)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert copied
+    assert "Copied: ~" in out
+    assert "(cap 1,400)" in out
+
+
+def test_trimmed_items_appear_in_the_summary(repo, capsys, monkeypatch):
+    huge = Report(
+        uncommitted=[
+            FileChange(path=f"src/file{i}.py", status="M")
+            for i in range(100)
+        ],
+        todos=[
+            Todo(
+                path=f"src/file{i}.py",
+                line=i + 1,
+                text="# TODO: " + "x" * 200,
+            )
+            for i in range(100)
+        ],
+    )
+    monkeypatch.setattr(cli, "build_report", lambda cwd, n: huge)
+    monkeypatch.setattr(cli.pyperclip, "copy", lambda text: None)
+
+    code = main([str(repo.path)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "| trimmed:" in out
+    assert "TODOs" in out
+
+
+def test_budget_above_the_hard_max_is_reported_as_clamped(repo, capsys, monkeypatch):
+    monkeypatch.setattr(cli.pyperclip, "copy", lambda text: None)
+
+    code = main([str(repo.path), "--budget", "99999"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "(cap 1,450)" in out

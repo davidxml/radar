@@ -5,20 +5,32 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from .git import branches, is_repo, log, status_porcelain
-from .models import Report
+from .models import Event, Report
+from .signals.deletions import find_large_deletions
+from .signals.deps import find_dep_changes
+from .signals.reverts import find_reverts
 from .signals.todos import find_todos
+from .timeline import build_timeline
 
 STALE_DAYS = 30
 DEFAULT_COMMITS = 30
+MAX_DECISIONS = 15
+
+
+def _mtime(cwd: os.PathLike[str] | str, path: str) -> float:
+    try:
+        return os.path.getmtime(os.path.join(os.fspath(cwd), path))
+    except OSError:
+        return -1.0
 
 
 def build_report(
     cwd: os.PathLike[str] | str, n_commits: int = DEFAULT_COMMITS
 ) -> Report:
-    """Collect the block 1 signals for *cwd*."""
+    """Collect the resume and decision signals for *cwd*."""
     report = Report()
     if not is_repo(cwd):
         return report
@@ -30,14 +42,37 @@ def build_report(
     ]
 
     commits = log(cwd, 1)
+    last_subject = commits[0][2] if commits else None
     if commits:
         report.last_commit_date = commits[0][1][:10]
+
+    archaeology = (
+        find_reverts(cwd) + find_large_deletions(cwd) + find_dep_changes(cwd)
+    )
+    dirty_by_mtime = sorted(
+        report.uncommitted,
+        key=lambda change: _mtime(cwd, change.path),
+        reverse=True,
+    )
+    report.events = build_timeline(
+        archaeology,
+        report.last_commit_date,
+        dirty_by_mtime,
+        last_subject,
+    )
 
     return report
 
 
 def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _shown_events(events: List[Event]) -> List[Event]:
+    """Keep the highest-weight events, then show them chronologically."""
+    ranked = sorted(events, key=lambda event: (-event.weight, event.date))
+    chosen = ranked[:MAX_DECISIONS]
+    return sorted(chosen, key=lambda event: event.date)
 
 
 def render_resume(report: Report) -> str:
@@ -75,6 +110,17 @@ def render_resume(report: Report) -> str:
             )
     else:
         lines.append(f"  Stale branches: none older than {STALE_DAYS} days")
+
+    lines.append("")
+    lines.append("  Decisions")
+    if report.events:
+        for event in _shown_events(report.events):
+            lines.append(
+                f"    {event.date} | {event.kind}: {event.text} "
+                f"[{event.conf}] | {event.ref or '-'}"
+            )
+    else:
+        lines.append("    none yet")
 
     return "\n".join(lines)
 

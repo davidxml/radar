@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from radar.cli import STALE_DAYS, build_report, main, render_resume
+from radar.cli import (
+    MAX_DECISIONS,
+    STALE_DAYS,
+    build_report,
+    main,
+    render_resume,
+)
+from radar.models import Event, Report
 
 
 def test_main_prints_resume_here(repo, capsys):
@@ -53,3 +60,49 @@ def test_main_rejects_negative_commit_count(repo):
         assert exc.code == 2
     else:  # pragma: no cover - argparse always exits
         raise AssertionError("expected argparse to exit")
+
+
+def test_build_report_collects_decisions(repo):
+    original = repo.commit("add feature", files={"feature.py": "x = 1\n"})
+    repo.git("revert", "--no-edit", original)
+
+    report = build_report(repo.path)
+
+    kinds = [event.kind for event in report.events]
+    assert "revert" in kinds
+    assert "stop" in kinds
+
+
+def test_decisions_section_renders_one_line_per_event(repo, capsys):
+    original = repo.commit("add feature", files={"feature.py": "x = 1\n"})
+    repo.git("revert", "--no-edit", original)
+    revert_sha = repo.git("rev-parse", "HEAD").strip()[:7]
+
+    assert main([str(repo.path)]) == 0
+    out = capsys.readouterr().out
+
+    assert "Decisions" in out
+    assert f"| revert: reverted: add feature [e] | {revert_sha}" in out
+
+
+def test_decisions_show_at_most_fifteen_and_keep_heaviest():
+    events = [
+        Event(
+            date=f"2026-01-{day:02d}",
+            kind="other",
+            text=f"change {day}",
+            conf="e",
+            ref="abc1234",
+        )
+        for day in range(1, 21)
+    ]
+    events.append(
+        Event(date="2026-02-01", kind="stop", text="stopped here", conf="e")
+    )
+
+    out = render_resume(Report(events=events))
+    shown = [line for line in out.splitlines() if " | " in line]
+
+    assert len(shown) == MAX_DECISIONS
+    assert "change 19" not in out
+    assert shown[-1].endswith("| stop: stopped here [e] | -")

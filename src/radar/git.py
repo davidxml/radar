@@ -323,3 +323,113 @@ def added_lines(
             elif raw.startswith(" "):
                 line_no += 1
             # "-" lines are removals; "\ No newline..." is metadata.
+
+
+_NUMSTAT_RE = re.compile(r"^(\d+|-)\t(\d+|-)\t(.*)$")
+
+
+def _numstat_path(raw: str) -> str:
+    """Return a usable path from a numstat entry.
+
+    Renames appear as ``old => new`` or ``dir/{old => new}/file``; use the
+    destination path so signals see the file that exists after the commit.
+    """
+    path = raw.strip()
+    if " => " not in path:
+        return path
+    if "{" in path and "}" in path:
+        start = path.index("{")
+        end = path.rindex("}")
+        inner = path[start + 1 : end]
+        if " => " in inner:
+            destination = inner.split(" => ", 1)[1]
+            return path[:start] + destination + path[end + 1 :]
+    return path.split(" => ", 1)[1]
+
+
+def _split_numstat_tail(tail: str) -> Tuple[str, List[Tuple[int, int, str]]]:
+    """Split a log field into ``(body, [(added, deleted, path)])``."""
+    body_lines: List[str] = []
+    stats: List[Tuple[int, int, str]] = []
+    in_stats = False
+
+    for line in tail.splitlines():
+        match = _NUMSTAT_RE.match(line)
+        if match:
+            in_stats = True
+            added = 0 if match.group(1) == "-" else int(match.group(1))
+            deleted = 0 if match.group(2) == "-" else int(match.group(2))
+            path = _numstat_path(match.group(3))
+            if path:
+                stats.append((added, deleted, path))
+        elif in_stats:
+            # A blank line closes the numstat block.
+            continue
+        else:
+            body_lines.append(line)
+
+    return "\n".join(body_lines).strip(), stats
+
+
+def commits_numstat(
+    cwd: os.PathLike[str] | str, n: int = 200
+) -> List[Tuple[str, str, str, str, List[Tuple[int, int, str]]]]:
+    """Return commit metadata plus per-file line counts in one git call.
+
+    Each item is ``(sha7, iso_date, subject, body, [(added, deleted, path)])``
+    for the last *n* non-merge commits, oldest last. Binary files report
+    ``-`` in numstat and are normalized to zero.
+    """
+    if n <= 0:
+        return []
+
+    try:
+        out = run(
+            [
+                "-c",
+                "core.quotePath=false",
+                "log",
+                "--no-merges",
+                f"-n{n}",
+                "--numstat",
+                "--format=%x00%H%x00%aI%x00%s%x00%b",
+            ],
+            cwd,
+        )
+    except GitError:
+        return []
+
+    fields = out.split("\0")
+    commits: List[Tuple[str, str, str, str, List[Tuple[int, int, str]]]] = []
+
+    # fields[0] is the empty prefix before the first commit's NUL marker.
+    for index in range(1, len(fields) - 3, 4):
+        sha, date, subject, tail = fields[index : index + 4]
+        if len(sha) < 7 or not all(ch in "0123456789abcdef" for ch in sha):
+            continue
+        body, stats = _split_numstat_tail(tail)
+        commits.append((sha[:7], date, subject, body, stats))
+
+    return commits
+
+
+def parent_sha(
+    cwd: os.PathLike[str] | str, sha: str
+) -> Optional[str]:
+    """Return the first parent of *sha*, or None for a root commit."""
+    try:
+        out = run(["rev-parse", "--verify", "--quiet", f"{sha}^"], cwd)
+    except GitError:
+        return None
+    parent = out.strip()
+    return parent or None
+
+
+def file_at(
+    cwd: os.PathLike[str] | str, sha: str, path: str
+) -> Optional[str]:
+    """Return the contents of *path* at *sha*, or None if it is absent."""
+    try:
+        return run(["show", f"{sha}:{path}"], cwd)
+    except GitError:
+        return None

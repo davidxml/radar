@@ -23,7 +23,7 @@ def test_finds_todo_added_in_recent_commit(repo):
     assert todo.ref == sha[:7]
 
 
-def test_removed_todo_is_not_reported(repo):
+def test_removed_todo_is_dropped(repo):
     repo.commit(
         "add a todo",
         files={"app.py": "# TODO: delete me\nprint('hello')\n"},
@@ -33,9 +33,45 @@ def test_removed_todo_is_not_reported(repo):
     # The removal commit adds no marker, so scanning only it finds nothing.
     assert find_todos(repo.path, n_commits=1) == []
 
-    # The original addition is still visible with a wider history window.
-    all_todos = find_todos(repo.path, n_commits=2)
-    assert [t.text for t in all_todos] == ["# TODO: delete me"]
+    # Even with the adding commit in range, the marker is gone from disk.
+    assert find_todos(repo.path, n_commits=10) == []
+
+
+def test_moved_todo_gets_its_current_line_number(repo):
+    added = repo.commit(
+        "add a todo",
+        files={"app.py": "x = 1\n# TODO: still here\n"},
+    )
+    repo.commit(
+        "insert lines above",
+        files={"app.py": "a\nb\nc\nx = 1\n# TODO: still here\n"},
+    )
+
+    todos = find_todos(repo.path, n_commits=10)
+
+    assert len(todos) == 1
+    assert todos[0].line == 5
+    assert todos[0].text == "# TODO: still here"
+    assert todos[0].ref == added[:7]
+
+
+def test_todo_is_dropped_when_its_file_is_deleted(repo):
+    repo.commit("add file", files={"gone.py": "# FIXME: remove me\n"})
+    repo.git("rm", "-q", "gone.py")
+    repo.git("commit", "-q", "-m", "delete file")
+
+    assert find_todos(repo.path, n_commits=10) == []
+
+
+def test_todo_is_dropped_when_the_text_changes(repo):
+    repo.commit("add file", files={"app.py": "# TODO: old wording\n"})
+    repo.commit("rewrite", files={"app.py": "# TODO: new wording\n"})
+
+    todos = find_todos(repo.path, n_commits=10)
+
+    # The old wording is gone; only the rewording that exists today survives.
+    assert [t.text for t in todos] == ["# TODO: new wording"]
+    assert todos[0].line == 1
 
 
 def test_line_numbers_follow_the_new_file_version(repo):

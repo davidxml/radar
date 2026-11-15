@@ -8,9 +8,12 @@ from radar.git import (
     GitError,
     added_lines,
     branches,
+    commits_numstat,
+    file_at,
     is_ignored,
     is_repo,
     log,
+    parent_sha,
     run,
     status_porcelain,
 )
@@ -154,3 +157,67 @@ def test_added_lines_skips_deleted_files(repo):
 )
 def test_is_ignored(path, ignored):
     assert is_ignored(path) is ignored
+
+
+def test_commits_numstat_returns_metadata_body_and_counts(repo):
+    repo.commit("first change", files={"a.py": "one\ntwo\n"})
+    repo.write("blob.bin", "")
+    (repo.path / "blob.bin").write_bytes(b"\x00\x01\x02")
+    repo.write("b.py", "x = 1\ny = 2\n")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "subject", "-m", "extra body")
+
+    rows = commits_numstat(repo.path, 10)
+
+    sha, date, subject, body, stats = rows[0]
+    assert len(sha) == 7
+    assert date.startswith("20")
+    assert subject == "subject"
+    assert body == "extra body"
+    assert {path: (added, deleted) for added, deleted, path in stats} == {
+        "blob.bin": (0, 0),
+        "b.py": (2, 0),
+    }
+    assert commits_numstat(repo.path, 0) == []
+
+
+def test_commits_numstat_uses_destination_path_for_renames(repo):
+    repo.commit("add file", files={"old_name.py": "x = 1\n"})
+    repo.git("mv", "old_name.py", "new_name.py")
+    repo.commit("rename")
+
+    _sha, _date, _subject, _body, stats = commits_numstat(repo.path, 1)[0]
+
+    assert [path for _added, _deleted, path in stats] == ["new_name.py"]
+
+
+def test_commits_numstat_skips_merge_commits(repo):
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.commit("feature work", files={"feature.py": "x = 1\n"})
+    repo.git("checkout", "-q", "main")
+    repo.commit("main work", files={"main.py": "y = 1\n"})
+    repo.git("merge", "--no-ff", "-q", "-m", "merge feature", "feature")
+    merge = repo.git("rev-parse", "HEAD").strip()
+
+    rows = commits_numstat(repo.path, 50)
+
+    assert merge[:7] not in {row[0] for row in rows}
+    assert "feature work" in {row[2] for row in rows}
+
+
+def test_parent_sha_handles_root_commits(repo):
+    root = repo.git("rev-list", "--max-parents=0", "HEAD").strip()
+    repo.commit("second", files={"b.py": "x = 1\n"})
+    head = repo.git("rev-parse", "HEAD").strip()
+
+    assert parent_sha(repo.path, root) is None
+    assert parent_sha(repo.path, head) == root
+
+
+def test_file_at_reads_content_at_a_commit(repo):
+    first = repo.commit("first", files={"data.txt": "old\n"})
+    repo.commit("second", files={"data.txt": "new\n"})
+
+    assert file_at(repo.path, first, "data.txt") == "old\n"
+    assert file_at(repo.path, "HEAD", "data.txt") == "new\n"
+    assert file_at(repo.path, "HEAD", "missing.txt") is None

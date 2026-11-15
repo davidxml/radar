@@ -110,6 +110,46 @@ def test_skips_invalid_package_json_without_crashing(repo):
     assert events[0].ref == sha[:7]
 
 
+def test_merges_same_day_other_events_and_keeps_swaps_separate(repo):
+    repo.commit(
+        "base manifests",
+        files={
+            "requirements.txt": "requests\n",
+            "package.json": _pkg({}),
+        },
+    )
+    sha_first = repo.commit(
+        "add shared requirement",
+        files={"requirements.txt": "requests\nshared\n"},
+        date="2026-03-01T10:00:00+0000",
+    )
+    repo.commit(
+        "add shared and express",
+        files={"package.json": _pkg({"shared": "1", "express": "1"})},
+        date="2026-03-01T11:00:00+0000",
+    )
+    sha_swap = repo.commit(
+        "swap express for fastify",
+        files={"package.json": _pkg({"shared": "1", "fastify": "1"})},
+        date="2026-03-01T12:00:00+0000",
+    )
+
+    events = find_dep_changes(repo.path)
+
+    assert len(events) == 2
+    by_kind = {event.kind: event for event in events}
+
+    merged = by_kind["other"]
+    assert merged.text == "+express +shared"
+    assert merged.conf == "e"
+    assert merged.ref == sha_first[:7]
+
+    swap = by_kind["swap"]
+    assert swap.text == "-express +fastify"
+    assert swap.conf == "i"
+    assert swap.ref == sha_swap[:7]
+
+
 def test_reads_nested_package_json(repo):
     repo.commit(
         "web deps",

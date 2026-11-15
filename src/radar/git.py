@@ -212,6 +212,18 @@ def status_porcelain(cwd: os.PathLike[str] | str) -> List[FileChange]:
     return changes
 
 
+def current_branch(cwd: os.PathLike[str] | str) -> Optional[str]:
+    """Return the checked-out branch name, or None when HEAD is detached."""
+    try:
+        out = run(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    except GitError:
+        return None
+    name = out.strip()
+    if not name or name == "HEAD":
+        return None
+    return name
+
+
 def branches(cwd: os.PathLike[str] | str) -> List[Branch]:
     """Return local branches with the age of their last commit in days."""
     try:

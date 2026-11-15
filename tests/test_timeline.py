@@ -34,23 +34,26 @@ def test_build_timeline_sorts_and_dedupes_then_adds_stop():
     assert stop.text == "last work"
 
 
-def test_stop_uses_today_and_the_newest_uncommitted_file(tmp_path):
+def test_stop_uses_today_and_the_newest_uncommitted_file(
+    tmp_path, monkeypatch
+):
     old = tmp_path / "old.py"
     new = tmp_path / "new.py"
     old.write_text("old\n", encoding="utf-8")
     new.write_text("new\n", encoding="utf-8")
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(new, (2_000_000, 2_000_000))
+    monkeypatch.chdir(tmp_path)
 
     changes = [
-        FileChange(path=str(old), status="M"),
-        FileChange(path=str(new), status="M"),
+        FileChange(path="old.py", status="M"),
+        FileChange(path="new.py", status="M"),
     ]
 
     timeline = build_timeline([], "2026-01-01", changes, "ignored")
 
     stop = timeline[-1]
-    assert stop.text == f"{new} uncommitted changes"
+    assert stop.text == "new.py uncommitted changes (last commit: ignored)"
     assert stop.date == date.today().isoformat()
 
 
@@ -62,7 +65,9 @@ def test_stop_falls_back_to_first_change_for_relative_paths():
 
     timeline = build_timeline([], "2026-01-01", changes, "ignored")
 
-    assert timeline[-1].text == "missing-a.py uncommitted changes"
+    assert timeline[-1].text == (
+        "missing-a.py uncommitted changes (last commit: ignored)"
+    )
 
 
 def test_stop_without_commits_uses_today():
@@ -76,7 +81,25 @@ def test_stop_without_commits_uses_today():
 def test_stop_truncates_long_last_subject():
     timeline = build_timeline([], "2026-01-01", [], "x" * 100)
 
-    assert timeline[-1].text == "x" * 60
+    assert timeline[-1].text == "x" * 99
+    assert len(timeline[-1].text) < 100
+
+
+def test_stop_includes_last_commit_subject_and_stays_under_100(tmp_path):
+    dirty = tmp_path / ("very-long-file-name-" + "x" * 80 + ".py")
+    dirty.write_text("x\n", encoding="utf-8")
+    subject = "subject " + "y" * 100
+
+    timeline = build_timeline(
+        [],
+        "2026-01-01",
+        [FileChange(path=str(dirty), status="M")],
+        subject,
+    )
+
+    stop = timeline[-1]
+    assert "(last commit: " + subject[:40] + ")" in stop.text
+    assert len(stop.text) < 100
 
 
 def test_phases_split_after_fourteen_days():

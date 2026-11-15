@@ -19,7 +19,7 @@ def test_flags_a_commit_that_deletes_250_lines(repo):
     event = events[0]
     assert event.kind == "deletion"
     assert event.conf == "e"
-    assert event.text == "-250 lines in 1 files (top: big.py)"
+    assert event.text == "-249 net lines in 1 file (top: big.py)"
     assert event.ref == sha[:7]
 
 
@@ -42,16 +42,27 @@ def test_does_not_flag_many_added_lines(repo):
 
 
 def test_flags_a_ratio_heavy_deletion_over_fifty_lines(repo):
-    repo.commit("add file", files={"a.py": _lines(60)})
+    repo.commit("add file", files={"a.py": _lines(100)})
     repo.commit(
         "trim and add",
-        files={"a.py": _lines(10), "b.py": _lines(20, prefix="new")},
+        files={"a.py": _lines(20), "b.py": _lines(20, prefix="new")},
     )
 
     events = find_large_deletions(repo.path)
 
     assert len(events) == 1
-    assert events[0].text == "-50 lines in 1 files (top: a.py)"
+    assert events[0].text == "-60 net lines in 1 file (top: a.py)"
+
+
+def test_ratio_uses_net_deletions_not_total_deleted(repo):
+    repo.commit("add file", files={"a.py": _lines(167)})
+    repo.commit(
+        "trim and add",
+        files={"a.py": "", "b.py": _lines(117, prefix="new")},
+    )
+
+    # 50 net deletions out of 284 changed lines is below the 30% ratio.
+    assert find_large_deletions(repo.path) == []
 
 
 def test_ignores_deletions_in_ignored_paths(repo):
@@ -76,4 +87,58 @@ def test_top_path_is_the_file_with_most_deletions(repo):
     events = find_large_deletions(repo.path)
 
     assert len(events) == 1
-    assert events[0].text == "-270 lines in 2 files (top: b.py)"
+    assert events[0].text == "-268 net lines in 2 files (top: b.py)"
+
+
+def test_move_with_similar_added_and_deleted_lines_is_not_flagged(repo):
+    repo.commit("add old file", files={"old.py": _lines(300)})
+    (repo.path / "old.py").unlink()
+    repo.commit("move old file", files={"new.py": _lines(300)})
+
+    assert find_large_deletions(repo.path) == []
+
+
+def test_flags_a_real_300_line_deletion(repo):
+    repo.commit("add big file", files={"big.py": _lines(300)})
+    (repo.path / "big.py").unlink()
+    sha = repo.commit("delete big file")
+
+    events = find_large_deletions(repo.path)
+
+    assert len(events) == 1
+    assert events[0].text == "-300 net lines in 1 file (top: big.py)"
+    assert events[0].ref == sha[:7]
+
+
+def test_groups_same_day_deletions_and_keeps_other_days_separate(repo):
+    repo.commit(
+        "add big files",
+        files={
+            "a.py": _lines(1250),
+            "b.py": _lines(1230),
+            "c.py": _lines(1210),
+            "d.py": _lines(300),
+        },
+    )
+
+    (repo.path / "a.py").unlink()
+    sha_a = repo.commit("delete a", date="2026-03-01T10:00:00+0000")
+    (repo.path / "b.py").unlink()
+    repo.commit("delete b", date="2026-03-01T11:00:00+0000")
+    (repo.path / "c.py").unlink()
+    repo.commit("delete c", date="2026-03-01T12:00:00+0000")
+    (repo.path / "d.py").unlink()
+    sha_d = repo.commit("delete d", date="2026-03-05T10:00:00+0000")
+
+    events = find_large_deletions(repo.path)
+
+    assert len(events) == 2
+    by_date = {event.date: event for event in events}
+
+    grouped = by_date["2026-03-01"]
+    assert grouped.text == "-3,690 net lines across 3 commits (top: a.py)"
+    assert grouped.ref == sha_a[:7]
+
+    single = by_date["2026-03-05"]
+    assert single.text == "-300 net lines in 1 file (top: d.py)"
+    assert single.ref == sha_d[:7]

@@ -9,6 +9,7 @@ from radar.git import (
     added_lines,
     branches,
     commits_numstat,
+    current_branch,
     file_at,
     is_ignored,
     is_repo,
@@ -72,6 +73,14 @@ def test_log_returns_short_sha_iso_date_and_subject(repo):
     assert len(sha) == 7
     assert date.startswith("20")
     assert log(repo.path, 0) == []
+
+
+def test_current_branch_reports_main_and_none_when_detached(repo):
+    assert current_branch(repo.path) == "main"
+
+    repo.git("checkout", "-q", "--detach", "HEAD")
+
+    assert current_branch(repo.path) is None
 
 
 def test_branches_reports_age_in_days(repo):

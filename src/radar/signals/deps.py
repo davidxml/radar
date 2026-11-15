@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Iterable, List, Optional, Set
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..git import commits_numstat, file_at, is_ignored, parent_sha
 from ..models import Event
@@ -12,6 +13,17 @@ from .manifests import package_json, requirements
 MAX_NAMES = 3
 
 Parser = Callable[[str], Optional[Set[str]]]
+
+
+@dataclass
+class _OtherGroup:
+    """One-sided dependency changes that share a calendar date."""
+
+    first_date: str
+    ref: str
+    order: int
+    added: Set[str] = field(default_factory=set)
+    removed: Set[str] = field(default_factory=set)
 
 
 def _parser_for(path: str) -> Optional[Parser]:
@@ -44,6 +56,15 @@ def _manifest_paths(stats) -> List[str]:
     return paths
 
 
+def _merged_text(added: Set[str], removed: Set[str]) -> str:
+    parts: List[str] = []
+    if removed:
+        parts.append(_format_names("-", removed))
+    if added:
+        parts.append(_format_names("+", added))
+    return " ".join(parts)
+
+
 def find_dep_changes(
     cwd: os.PathLike[str] | str, n: int = 200
 ) -> List[Event]:
@@ -51,12 +72,16 @@ def find_dep_changes(
 
     Commits touching ``package.json`` or ``requirements.txt`` anywhere in the
     tree are compared against their first parent. A commit that adds and
-    removes names is a ``swap`` (inferred); one-sided changes are ``other``
-    (evidence). Invalid or missing manifests are skipped, never fatal.
+    removes names is a ``swap`` (inferred) and stays separate. One-sided
+    changes are ``other`` (evidence); changes from the same day are merged,
+    with duplicates removed and at most three names shown per side.
     """
-    events: List[Event] = []
+    swaps: List[Tuple[int, Event]] = []
+    other_groups: Dict[str, _OtherGroup] = {}
 
-    for sha, date, _subject, _body, stats in commits_numstat(cwd, n):
+    for order, (sha, date, _subject, _body, stats) in enumerate(
+        commits_numstat(cwd, n)
+    ):
         paths = _manifest_paths(stats)
         if not paths:
             continue
@@ -90,17 +115,49 @@ def find_dep_changes(
             continue
 
         if added and removed:
-            kind, conf = "swap", "i"
-            text = f"{_format_names('-', removed)} {_format_names('+', added)}"
-        elif added:
-            kind, conf = "other", "e"
-            text = _format_names("+", added)
-        else:
-            kind, conf = "other", "e"
-            text = _format_names("-", removed)
+            swaps.append(
+                (
+                    order,
+                    Event(
+                        date=date[:10],
+                        kind="swap",
+                        text=(
+                            f"{_format_names('-', removed)} "
+                            f"{_format_names('+', added)}"
+                        ),
+                        conf="i",
+                        ref=sha,
+                    ),
+                )
+            )
+            continue
 
-        events.append(
-            Event(date=date[:10], kind=kind, text=text, conf=conf, ref=sha)
+        day = date[:10]
+        group = other_groups.get(day)
+        if group is None:
+            group = _OtherGroup(first_date=date, ref=sha, order=order)
+            other_groups[day] = group
+        elif date < group.first_date:
+            group.first_date = date
+            group.ref = sha
+
+        group.added.update(added)
+        group.removed.update(removed)
+
+    ordered: List[Tuple[int, Event]] = list(swaps)
+    for day, group in other_groups.items():
+        ordered.append(
+            (
+                group.order,
+                Event(
+                    date=day,
+                    kind="other",
+                    text=_merged_text(group.added, group.removed),
+                    conf="e",
+                    ref=group.ref,
+                ),
+            )
         )
 
-    return events
+    ordered.sort(key=lambda item: item[0])
+    return [event for _order, event in ordered]

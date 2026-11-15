@@ -10,7 +10,14 @@ from typing import List, Optional, Sequence
 from . import __version__, cache
 from .budget import FULL, HARD_MAX, TARGET, est_tokens, fit, trimmed
 from .export import render_md, render_xml
-from .git import branches, is_repo, log, status_porcelain, toplevel
+from .git import (
+    branches,
+    current_branch,
+    is_repo,
+    log,
+    status_porcelain,
+    toplevel,
+)
 from .models import Report
 from .render_ascii import render_terminal
 from .signals.deletions import find_large_deletions
@@ -33,6 +40,7 @@ except ImportError:  # pragma: no cover - depends on the environment
 
 STALE_DAYS = 30
 DEFAULT_COMMITS = 30
+DEFAULT_BRANCHES = frozenset({"main", "master", "trunk"})
 
 
 def _mtime(cwd: os.PathLike[str] | str, path: str) -> float:
@@ -53,8 +61,13 @@ def build_report(
     report.uncommitted = status_porcelain(cwd)
     report.failing_tests = find_failing(cwd)
     report.todos = find_todos(cwd, n_commits)
+    current = current_branch(cwd)
     report.stale_branches = [
-        branch for branch in branches(cwd) if branch.days_old > STALE_DAYS
+        branch
+        for branch in branches(cwd)
+        if branch.days_old > STALE_DAYS
+        and branch.name not in DEFAULT_BRANCHES
+        and branch.name != current
     ]
 
     commits = log(cwd, 1)

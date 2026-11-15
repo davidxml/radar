@@ -6,9 +6,11 @@ import os
 from datetime import date
 from typing import Iterable, List, Optional, Sequence, Union
 
+from .budget import shorten
 from .models import Event, FileChange
 
-MAX_STOP_TEXT = 60
+MAX_STOP_TEXT = 99
+STOP_SUBJECT_CHARS = 40
 GAP_DAYS = 14
 
 Uncommitted = Union[FileChange, str]
@@ -58,14 +60,24 @@ def build_timeline(
     """Return chronological, deduped events with a synthetic ``stop`` event.
 
     When the working tree is dirty, the stop event names the most recently
-    modified uncommitted file and is dated today. Otherwise it records the
-    last commit subject on the last commit date.
+    modified uncommitted file, includes the last commit subject, and is dated
+    today. Otherwise it records the last commit subject on the last commit
+    date. The stop text stays under 100 characters.
     """
     items: List[Event] = list(events)
 
     if uncommitted:
         newest = _newest_uncommitted(uncommitted)
-        stop_text = f"{newest} uncommitted changes"
+        subject = (last_subject or "no commits yet")[:STOP_SUBJECT_CHARS]
+        newest = newest or "working tree"
+        suffix = f" uncommitted changes (last commit: {subject})"
+        available = max(0, MAX_STOP_TEXT - len(suffix))
+        path = (
+            newest
+            if len(newest) <= available
+            else shorten(newest, available)
+        )
+        stop_text = f"{path}{suffix}"[:MAX_STOP_TEXT]
         stop_date = _today()
     else:
         stop_text = (last_subject or "no commits yet")[:MAX_STOP_TEXT]

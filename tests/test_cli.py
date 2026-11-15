@@ -53,6 +53,56 @@ def test_build_report_keeps_only_stale_branches(repo):
     assert "wip/old" in out
 
 
+def test_build_report_excludes_default_and_current_branches(repo):
+    repo.commit(
+        "old main",
+        files={"base.py": "x = 1\n"},
+        date="2020-01-01T00:00:00+0000",
+    )
+
+    repo.git("checkout", "-q", "-b", "master")
+    repo.commit(
+        "old master",
+        files={"master.py": "x = 1\n"},
+        date="2020-01-02T00:00:00+0000",
+    )
+    repo.git("checkout", "-q", "main")
+
+    repo.git("checkout", "-q", "-b", "trunk")
+    repo.commit(
+        "old trunk",
+        files={"trunk.py": "x = 1\n"},
+        date="2020-01-03T00:00:00+0000",
+    )
+    repo.git("checkout", "-q", "main")
+
+    repo.git("checkout", "-q", "-b", "wip/old")
+    repo.commit(
+        "old side work",
+        files={"side.py": "x = 1\n"},
+        date="2020-01-04T00:00:00+0000",
+    )
+    repo.git("checkout", "-q", "main")
+
+    repo.git("checkout", "-q", "-b", "wip/current")
+    repo.commit(
+        "current old work",
+        files={"current.py": "x = 1\n"},
+        date="2020-01-05T00:00:00+0000",
+    )
+
+    report = build_report(repo.path)
+
+    assert [branch.name for branch in report.stale_branches] == ["wip/old"]
+    assert all(
+        branch.name not in {"main", "master", "trunk"}
+        for branch in report.stale_branches
+    )
+    assert all(
+        branch.name != "wip/current" for branch in report.stale_branches
+    )
+
+
 def test_main_reports_non_repository(tmp_path, capsys):
     code = main([str(tmp_path)])
     captured = capsys.readouterr()

@@ -26,7 +26,7 @@ ARTIFACTS = (LASTFAILED, *JUNIT_FILES)
 
 
 def _path(cwd: os.PathLike[str] | str, relpath: str) -> str:
-    return os.path.join(os.fspath(cwd), *relpath.split("/"))
+    return os.path.join(os.fspath(cwd), relpath)
 
 
 def _is_fresh(path: str, now: float) -> bool:

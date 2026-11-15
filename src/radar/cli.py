@@ -7,7 +7,7 @@ import os
 import sys
 from typing import List, Optional, Sequence
 
-from . import cache
+from . import __version__, cache
 from .budget import FULL, HARD_MAX, TARGET, est_tokens, fit, trimmed
 from .export import render_md, render_xml
 from .git import branches, is_repo, log, status_porcelain, toplevel
@@ -107,6 +107,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="radar",
         description="Show where work stopped in a git repository.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "path",

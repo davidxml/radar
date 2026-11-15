@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from radar import cli
 from radar.cli import STALE_DAYS, build_report, main
 from radar.models import Event, FileChange, Report, Todo
@@ -12,7 +14,7 @@ def test_main_prints_resume_here(repo, capsys):
     repo.commit("add a todo", files={"app.py": "# TODO: finish the parser\n"})
     repo.write("dirty.py", "x = 1\n")
 
-    code = main([str(repo.path)])
+    code = main([str(repo.path), "--no-copy"])
     out = capsys.readouterr().out
 
     assert code == 0
@@ -21,6 +23,14 @@ def test_main_prints_resume_here(repo, capsys):
     assert "?  dirty.py" in out
     assert "TODO / FIXME (1)" in out
     assert "app.py:1  # TODO: finish the parser" in out
+
+
+def test_version_prints_package_version(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == "radar 0.1.0"
 
 
 def test_build_report_keeps_only_stale_branches(repo):

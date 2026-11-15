@@ -79,7 +79,12 @@ def repo(tmp_path: Path) -> TempRepo:
     path.mkdir()
     temp = TempRepo(path)
 
-    temp.git("init", "-q")
+    try:
+        temp.git("init", "-q", "-b", "main")
+    except AssertionError:
+        # Git < 2.28 has no ``init -b``; create main explicitly.
+        temp.git("init", "-q")
+        temp.git("checkout", "-q", "-b", "main")
     temp.git("config", "user.name", "Radar Test")
     temp.git("config", "user.email", "radar@example.com")
     temp.git("config", "commit.gpgsign", "false")
@@ -93,6 +98,4 @@ def repo(tmp_path: Path) -> TempRepo:
             "app.py": "def main():\n    print('hello')\n",
         },
     )
-    # Normalize the branch name regardless of the machine's init.defaultBranch.
-    temp.git("branch", "-M", "main")
     return temp

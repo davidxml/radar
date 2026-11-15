@@ -101,6 +101,3 @@ Results are cached in `.git/radar-cache.json`, keyed on the HEAD commit plus the
 
 Issues and PRs welcome. Run `pytest` before submitting.
 
-## License
-
-MIT

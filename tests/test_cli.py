@@ -1,16 +1,11 @@
-"""Tests for the Resume Here CLI output."""
+"""Tests for the terminal radar CLI output."""
 
 from __future__ import annotations
 
 from radar import cli
-from radar.cli import (
-    MAX_DECISIONS,
-    STALE_DAYS,
-    build_report,
-    main,
-    render_resume,
-)
+from radar.cli import STALE_DAYS, build_report, main
 from radar.models import Event, FileChange, Report, Todo
+from radar.render_ascii import render_terminal
 
 
 def test_main_prints_resume_here(repo, capsys):
@@ -21,8 +16,8 @@ def test_main_prints_resume_here(repo, capsys):
     out = capsys.readouterr().out
 
     assert code == 0
-    assert "Resume Here" in out
-    assert "Uncommitted (1 file)" in out
+    assert "RESUME HERE" in out
+    assert "Uncommitted (1)" in out
     assert "?  dirty.py" in out
     assert "TODO / FIXME (1)" in out
     assert "app.py:1  # TODO: finish the parser" in out
@@ -42,7 +37,10 @@ def test_build_report_keeps_only_stale_branches(repo):
     assert [branch.name for branch in report.stale_branches] == ["wip/old"]
     assert report.stale_branches[0].days_old > STALE_DAYS
     assert report.last_commit_date is not None
-    assert render_resume(report).count("Stale branches") == 1
+
+    out = render_terminal(report, "repo")
+    assert out.count("Stale branches") == 1
+    assert "wip/old" in out
 
 
 def test_main_reports_non_repository(tmp_path, capsys):
@@ -74,19 +72,21 @@ def test_build_report_collects_decisions(repo):
     assert "stop" in kinds
 
 
-def test_decisions_section_renders_one_line_per_event(repo, capsys):
+def test_timeline_section_renders_one_line_per_event(repo, capsys):
     original = repo.commit("add feature", files={"feature.py": "x = 1\n"})
     repo.git("revert", "--no-edit", original)
     revert_sha = repo.git("rev-parse", "HEAD").strip()[:7]
 
-    assert main([str(repo.path)]) == 0
+    assert main([str(repo.path), "--no-copy"]) == 0
     out = capsys.readouterr().out
 
-    assert "Decisions" in out
-    assert f"| revert: reverted: add feature [e] | {revert_sha}" in out
+    assert "TIMELINE" in out
+    assert "revert" in out
+    assert "reverted: add feature" in out
+    assert revert_sha in out
 
 
-def test_decisions_show_at_most_fifteen_and_keep_heaviest():
+def test_timeline_shows_at_most_fifteen_and_keeps_heaviest():
     events = [
         Event(
             date=f"2026-01-{day:02d}",
@@ -101,12 +101,17 @@ def test_decisions_show_at_most_fifteen_and_keep_heaviest():
         Event(date="2026-02-01", kind="stop", text="stopped here", conf="e")
     )
 
-    out = render_resume(Report(events=events))
-    shown = [line for line in out.splitlines() if " | " in line]
+    out = render_terminal(Report(events=events), "repo")
+    shown = [
+        line
+        for line in out.splitlines()
+        if line.startswith("  2026-") and " [e]" in line
+    ]
 
-    assert len(shown) == MAX_DECISIONS
-    assert "change 19" not in out
-    assert shown[-1].endswith("| stop: stopped here [e] | -")
+    assert len(shown) == 15
+    assert "change 20" in out
+    assert "change 1 [e]" not in out
+    assert "stopped here" in shown[-1]
 
 
 def test_full_prints_a_size_warning(repo, capsys):

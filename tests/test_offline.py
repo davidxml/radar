@@ -28,7 +28,7 @@ def test_no_copy_runs_offline(repo, no_sockets, capsys):
     out = capsys.readouterr().out
 
     assert code == 0
-    assert "Resume Here" in out
+    assert "RESUME HERE" in out
     assert "Prompt: ~" in out
 
 
@@ -48,4 +48,4 @@ def test_md_runs_offline(repo, no_sockets, capsys, monkeypatch):
 
     assert code == 0
     assert calls, "the Markdown renderer was not used"
-    assert "Resume Here" in out
+    assert "RESUME HERE" in out

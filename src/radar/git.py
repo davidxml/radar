@@ -150,6 +150,16 @@ def is_repo(cwd: os.PathLike[str] | str) -> bool:
     return out.strip() == "true"
 
 
+def toplevel(cwd: os.PathLike[str] | str) -> Optional[str]:
+    """Return the working tree root, or None when *cwd* is not inside one."""
+    try:
+        out = run(["rev-parse", "--show-toplevel"], cwd, check=False)
+    except GitError:
+        return None
+    root = out.strip()
+    return root or None
+
+
 def _unquote(path: str) -> str:
     """Undo git's C-style quoting when ``core.quotePath`` is in play."""
     if len(path) >= 2 and path.startswith('"') and path.endswith('"'):

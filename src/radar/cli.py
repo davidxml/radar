@@ -1,4 +1,4 @@
-"""Command line entry point: print a plain-text Resume Here list."""
+"""Command line entry point: print the terminal radar and export a prompt."""
 
 from __future__ import annotations
 
@@ -7,14 +7,17 @@ import os
 import sys
 from typing import List, Optional, Sequence
 
+from . import cache
 from .budget import FULL, HARD_MAX, TARGET, est_tokens, fit, trimmed
 from .export import render_md, render_xml
-from .git import branches, is_repo, log, status_porcelain
-from .models import Event, Report
+from .git import branches, is_repo, log, status_porcelain, toplevel
+from .models import Report
+from .render_ascii import render_terminal
 from .signals.deletions import find_large_deletions
 from .signals.deps import find_dep_changes
 from .signals.reverts import find_reverts
 from .signals.todos import find_todos
+from .tests_artifacts import find_failing
 from .timeline import build_timeline
 
 try:
@@ -30,7 +33,6 @@ except ImportError:  # pragma: no cover - depends on the environment
 
 STALE_DAYS = 30
 DEFAULT_COMMITS = 30
-MAX_DECISIONS = 15
 
 
 def _mtime(cwd: os.PathLike[str] | str, path: str) -> float:
@@ -49,6 +51,7 @@ def build_report(
         return report
 
     report.uncommitted = status_porcelain(cwd)
+    report.failing_tests = find_failing(cwd)
     report.todos = find_todos(cwd, n_commits)
     report.stale_branches = [
         branch for branch in branches(cwd) if branch.days_old > STALE_DAYS
@@ -77,80 +80,30 @@ def build_report(
     return report
 
 
-def _plural(count: int, noun: str) -> str:
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
-
-
-def _shown_events(events: List[Event]) -> List[Event]:
-    """Keep the highest-weight events, then show them chronologically."""
-    ranked = sorted(events, key=lambda event: (-event.weight, event.date))
-    chosen = ranked[:MAX_DECISIONS]
-    return sorted(chosen, key=lambda event: event.date)
-
-
-def render_resume(report: Report) -> str:
-    """Render the Resume Here block as plain text."""
-    lines = ["Resume Here"]
-
-    if report.last_commit_date:
-        lines.append(f"  Last commit: {report.last_commit_date}")
-
-    lines.append("")
-    if report.uncommitted:
-        lines.append(f"  Uncommitted ({_plural(len(report.uncommitted), 'file')})")
-        for change in report.uncommitted:
-            lines.append(f"    {change.status}  {change.path}")
-    else:
-        lines.append("  Uncommitted: clean")
-
-    lines.append("")
-    if report.todos:
-        lines.append(f"  TODO / FIXME ({len(report.todos)})")
-        for todo in report.todos:
-            ref = f"  [{todo.ref}]" if todo.ref else ""
-            lines.append(f"    {todo.path}:{todo.line}  {todo.text}{ref}")
-    else:
-        lines.append("  TODO / FIXME: none in recent commits")
-
-    lines.append("")
-    if report.stale_branches:
-        lines.append(
-            f"  Stale branches (older than {STALE_DAYS} days)"
-        )
-        for branch in report.stale_branches:
-            lines.append(
-                f"    {branch.name}  ({_plural(branch.days_old, 'day')})"
-            )
-    else:
-        lines.append(f"  Stale branches: none older than {STALE_DAYS} days")
-
-    lines.append("")
-    lines.append("  Decisions")
-    if report.events:
-        for event in _shown_events(report.events):
-            lines.append(
-                f"    {event.date} | {event.kind}: {event.text} "
-                f"[{event.conf}] | {event.ref or '-'}"
-            )
-    else:
-        lines.append("    none yet")
-
-    return "\n".join(lines)
-
-
 def _copy_summary(
     size: int,
     cap: int,
     trimmed_items: List[str],
     label: str = "Copied",
+    cached: bool = False,
 ) -> str:
     line = f"{label}: ~{size} tokens (cap {cap:,})"
     if trimmed_items:
         line += " | trimmed: " + ", ".join(trimmed_items)
+    if cached:
+        line += " (cached)"
     return line
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Legacy Windows consoles cannot encode every path or TODO character.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         prog="radar",
         description="Show where work stopped in a git repository.",
@@ -190,6 +143,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dest="no_copy",
         help="do not copy the prompt to the clipboard",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        dest="no_cache",
+        help="skip reading and writing the report cache",
+    )
     args = parser.parse_args(argv)
 
     cwd = os.path.abspath(args.path)
@@ -199,8 +158,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.commits < 0:
         parser.error("--commits must be zero or greater")
 
-    report = build_report(cwd, args.commits)
-    print(render_resume(report))
+    key: Optional[str] = None
+    cached_report: Optional[Report] = None
+    if not args.no_cache:
+        try:
+            key = cache.compute_key(cwd)
+            if args.commits != DEFAULT_COMMITS:
+                key = f"{key}:{args.commits}"
+        except Exception:
+            key = None
+        if key is not None:
+            try:
+                cached_report = cache.load(cwd, key)
+            except Exception:
+                cached_report = None
+
+    cached = cached_report is not None
+    if cached_report is not None:
+        report = cached_report
+    else:
+        report = build_report(cwd, args.commits)
+        if key is not None:
+            try:
+                cache.save(cwd, key, report)
+            except Exception:
+                pass
+
+    root = toplevel(cwd) or cwd
+    repo_name = os.path.basename(os.path.normpath(root)) or os.path.basename(
+        os.path.normpath(cwd)
+    )
+    print(render_terminal(report, repo_name=repo_name))
 
     render = render_md if args.md else render_xml
     requested = args.budget or TARGET
@@ -222,7 +210,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("warning: budget below minimum size")
 
     if args.no_copy:
-        print(_copy_summary(size, cap, trimmed_items, label="Prompt"))
+        print(_copy_summary(size, cap, trimmed_items, label="Prompt", cached=cached))
         return 0
 
     try:
@@ -230,10 +218,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except Exception:
         print("clipboard unavailable, printing prompt:")
         print(text)
-        print(_copy_summary(size, cap, trimmed_items, label="Prompt"))
+        print(
+            _copy_summary(size, cap, trimmed_items, label="Prompt", cached=cached)
+        )
         return 0
 
-    print(_copy_summary(size, cap, trimmed_items))
+    print(_copy_summary(size, cap, trimmed_items, cached=cached))
     return 0
 
 

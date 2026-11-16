@@ -186,6 +186,89 @@ def test_root_manifest_has_no_before_side(repo):
     assert find_dep_changes(repo.path) == []
 
 
+def test_detects_a_go_mod_module_swap(repo):
+    repo.commit(
+        "old logging module",
+        files={
+            "go.mod": (
+                "module example.com/demo\n\n"
+                "go 1.22\n\n"
+                "require github.com/old/logger v1.0.0\n"
+            )
+        },
+    )
+    sha = repo.commit(
+        "new logging module",
+        files={
+            "go.mod": (
+                "module example.com/demo\n\n"
+                "go 1.22\n\n"
+                "require github.com/new/logger v2.0.0\n"
+            )
+        },
+    )
+
+    events = find_dep_changes(repo.path)
+
+    assert [(e.kind, e.conf, e.text, e.ref) for e in events] == [
+        (
+            "swap",
+            "i",
+            "-github.com/old/logger +github.com/new/logger",
+            sha[:7],
+        )
+    ]
+
+
+def test_detects_a_cargo_dependency_addition(repo):
+    base = (
+        '[package]\nname = "demo"\nversion = "0.1.0"\n\n'
+        '[dependencies]\nserde = "1"\n'
+    )
+    repo.commit("base cargo manifest", files={"Cargo.toml": base})
+    sha = repo.commit(
+        "add tokio",
+        files={"Cargo.toml": base + 'tokio = "1"\n'},
+    )
+
+    events = find_dep_changes(repo.path)
+
+    assert [(e.kind, e.conf, e.text, e.ref) for e in events] == [
+        ("other", "e", "+tokio", sha[:7])
+    ]
+
+
+def test_reads_a_nested_go_mod(repo):
+    base = "module example.com/api\n\ngo 1.22\n\n"
+    repo.commit(
+        "api go module",
+        files={"services/api/go.mod": base + "require github.com/old/db v1.0.0\n"},
+    )
+    sha = repo.commit(
+        "swap api database",
+        files={"services/api/go.mod": base + "require github.com/new/db v2.0.0\n"},
+    )
+
+    events = find_dep_changes(repo.path)
+
+    assert [(e.kind, e.text, e.ref) for e in events] == [
+        ("swap", "-github.com/old/db +github.com/new/db", sha[:7])
+    ]
+
+
+def test_lockfile_commits_produce_no_dependency_events(repo):
+    repo.commit(
+        "initial lockfile",
+        files={"gradle.lockfile": "org.example:lib:1.0=compileClasspath\n"},
+    )
+    repo.commit(
+        "refresh lockfile",
+        files={"gradle.lockfile": "org.example:lib:2.0=compileClasspath\n"},
+    )
+
+    assert find_dep_changes(repo.path) == []
+
+
 def test_package_json_parser_rejects_invalid_documents():
     assert package_json.parse("{") is None
     assert package_json.parse("[]") is None

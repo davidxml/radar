@@ -8,11 +8,38 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..git import commits_numstat, file_at, is_ignored, parent_sha
 from ..models import Event
-from .manifests import package_json, requirements
+from .manifests import (
+    cargo_toml,
+    composer,
+    gemfile,
+    go_mod,
+    gradle,
+    mix,
+    package_json,
+    pom,
+    pubspec,
+    pyproject,
+    requirements,
+)
 
 MAX_NAMES = 3
 
 Parser = Callable[[str], Optional[Set[str]]]
+
+_PARSERS: Dict[str, Parser] = {
+    "package.json": package_json.parse,
+    "requirements.txt": requirements.parse,
+    "pyproject.toml": pyproject.parse,
+    "go.mod": go_mod.parse,
+    "cargo.toml": cargo_toml.parse,
+    "gemfile": gemfile.parse,
+    "composer.json": composer.parse,
+    "pom.xml": pom.parse,
+    "build.gradle": gradle.parse,
+    "build.gradle.kts": gradle.parse,
+    "pubspec.yaml": pubspec.parse,
+    "mix.exs": mix.parse,
+}
 
 
 @dataclass
@@ -27,12 +54,8 @@ class _OtherGroup:
 
 
 def _parser_for(path: str) -> Optional[Parser]:
-    name = path.rsplit("/", 1)[-1].lower()
-    if name == "package.json":
-        return package_json.parse
-    if name == "requirements.txt":
-        return requirements.parse
-    return None
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return _PARSERS.get(name)
 
 
 def _format_names(prefix: str, names: Iterable[str]) -> str:
@@ -70,11 +93,11 @@ def find_dep_changes(
 ) -> List[Event]:
     """Return events for dependency-set changes in recent commits.
 
-    Commits touching ``package.json`` or ``requirements.txt`` anywhere in the
-    tree are compared against their first parent. A commit that adds and
-    removes names is a ``swap`` (inferred) and stays separate. One-sided
-    changes are ``other`` (evidence); changes from the same day are merged,
-    with duplicates removed and at most three names shown per side.
+    Commits touching a supported manifest anywhere in the tree are compared
+    against their first parent. A commit that adds and removes names is a
+    ``swap`` (inferred) and stays separate. One-sided changes are ``other``
+    (evidence); changes from the same day are merged, with duplicates removed
+    and at most three names shown per side.
     """
     swaps: List[Tuple[int, Event]] = []
     other_groups: Dict[str, _OtherGroup] = {}

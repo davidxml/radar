@@ -168,6 +168,29 @@ def test_is_ignored(path, ignored):
     assert is_ignored(path) is ignored
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "poetry.lock",
+        "uv.lock",
+        "Pipfile.lock",
+        "go.sum",
+        "Cargo.lock",
+        "Gemfile.lock",
+        "composer.lock",
+        "pubspec.lock",
+        "mix.lock",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "gradle.lockfile",
+        "services/api/gradle.lockfile",
+    ],
+)
+def test_all_dependency_lockfiles_are_ignored(path):
+    assert is_ignored(path) is True
+
+
 def test_commits_numstat_returns_metadata_body_and_counts(repo):
     repo.commit("first change", files={"a.py": "one\ntwo\n"})
     repo.write("blob.bin", "")

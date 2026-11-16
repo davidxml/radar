@@ -54,6 +54,7 @@ IGNORED_FILES = frozenset(
         "Gemfile.lock",
         "composer.lock",
         "Cargo.lock",
+        "gradle.lockfile",
         "go.sum",
         "mix.lock",
         "pubspec.lock",

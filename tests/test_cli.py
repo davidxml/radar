@@ -247,3 +247,48 @@ def test_budget_above_the_hard_max_is_reported_as_clamped(repo, capsys, monkeypa
 
     assert code == 0
     assert "(cap 1,450)" in out
+
+
+def test_build_report_populates_hotspots_and_env_issues(repo):
+    for index in range(4):
+        repo.commit(
+            f"pair {index}",
+            files={"a.py": f"a = {index}\n", "b.py": f"b = {index}\n"},
+        )
+    repo.write(".env.example", "MISSING_KEY=\n")
+    repo.write(".env", "OTHER=1\n")
+
+    report = build_report(repo.path)
+
+    assert any(item.a == "a.py" and item.b == "b.py" for item in report.hotspots)
+    assert any(
+        issue.kind == "missing_key" and "MISSING_KEY" in issue.detail
+        for issue in report.env_issues
+    )
+
+
+def test_run_tests_runs_pytest_and_bypasses_cache(repo, capsys):
+    repo.write(
+        "tests/test_fail.py",
+        "def test_fails():\n    assert False\n",
+    )
+
+    code = main([str(repo.path), "--run-tests", "--no-copy"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "running tests..." in out
+    assert "Failing tests" in out
+    assert "tests/test_fail.py::test_fails" in out
+    assert not (repo.path / ".git" / "radar-cache.json").exists()
+
+
+def test_diagram_flag_is_included_in_the_copied_prompt(repo, monkeypatch):
+    copied = []
+    monkeypatch.setattr(cli.pyperclip, "copy", copied.append)
+    repo.commit("work", files={"app.py": "# TODO: work\n"})
+
+    assert main([str(repo.path), "--diagram"]) == 0
+
+    assert copied
+    assert "<diagram>" in copied[0]

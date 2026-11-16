@@ -8,7 +8,7 @@ from datetime import date
 from typing import Optional
 
 from . import git, tests_artifacts
-from .models import Branch, Event, FileChange, Report, Todo
+from .models import Branch, EnvIssue, Event, FileChange, Hotspot, Report, Todo
 
 try:
     from . import __version__
@@ -16,6 +16,19 @@ except ImportError:  # pragma: no cover
     __version__ = "0"
 
 SCHEMA = 1
+ENV_MTIME_FILES = (
+    ".env",
+    ".env.example",
+    ".env.sample",
+    ".python-version",
+    ".nvmrc",
+    ".node-version",
+    ".tool-versions",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+)
 
 
 def _out(args, cwd) -> str:
@@ -52,17 +65,29 @@ def compute_key(cwd: str, n_commits: int = 200, n_todo: int = 30) -> str:
         h.update(f"|{f.status}:{f.path}:{sig}".encode())
     # Test artifacts live outside git (.pytest_cache is usually ignored).
     h.update(tests_artifacts.fingerprint(cwd).encode())
+    # .env files and compose files are commonly gitignored, so HEAD and status
+    # cannot see edits to them.
+    for name in ENV_MTIME_FILES:
+        path = os.path.join(cwd, name)
+        try:
+            st = os.stat(path)
+            sig = f"{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            sig = "gone"
+        h.update(f"|env:{name}:{sig}".encode())
     return h.hexdigest()
 
 
 def _from_dict(d: dict) -> Report:
     return Report(
-        uncommitted=[FileChange(**x) for x in d["uncommitted"]],
-        todos=[Todo(**x) for x in d["todos"]],
-        failing_tests=list(d["failing_tests"]),
-        stale_branches=[Branch(**x) for x in d["stale_branches"]],
-        events=[Event(**x) for x in d["events"]],
+        uncommitted=[FileChange(**x) for x in d.get("uncommitted", [])],
+        todos=[Todo(**x) for x in d.get("todos", [])],
+        failing_tests=list(d.get("failing_tests", [])),
+        stale_branches=[Branch(**x) for x in d.get("stale_branches", [])],
+        events=[Event(**x) for x in d.get("events", [])],
         last_commit_date=d.get("last_commit_date"),
+        hotspots=[Hotspot(**x) for x in d.get("hotspots", [])],
+        env_issues=[EnvIssue(**x) for x in d.get("env_issues", [])],
     )
 
 

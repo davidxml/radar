@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from radar import cli
+from radar import cache, cli
 
 
 @pytest.fixture
@@ -125,3 +125,40 @@ def test_no_cache_always_rebuilds(repo, build_calls):
 
     assert len(build_calls) == 2
     assert not (repo.path / ".git" / "radar-cache.json").exists()
+
+
+def test_old_cache_reports_without_new_fields_still_load():
+    report = cache._from_dict(
+        {
+            "uncommitted": [],
+            "todos": [],
+            "failing_tests": [],
+            "stale_branches": [],
+            "events": [],
+            "last_commit_date": None,
+        }
+    )
+
+    assert report.hotspots == []
+    assert report.env_issues == []
+
+
+@pytest.mark.parametrize(
+    "name,content",
+    [
+        (".env", "A=1\n"),
+        (".env.example", "A=\n"),
+        ("docker-compose.yml", "ports: []\n"),
+    ],
+)
+def test_env_file_mtimes_invalidate_the_cache(repo, build_calls, name, content):
+    repo.write(".gitignore", ".env\n.env.example\ndocker-compose.yml\n")
+    repo.commit("ignore env files")
+    path = repo.write(name, content)
+    assert _run(repo) == 0
+
+    stat = os.stat(path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000))
+    assert _run(repo) == 0
+
+    assert len(build_calls) == 2

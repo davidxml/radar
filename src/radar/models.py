@@ -39,6 +39,19 @@ class Branch:
     days_old: int
 
 
+@dataclass(frozen=True)
+class Hotspot:
+    a: str
+    b: str
+    count: int
+
+
+@dataclass(frozen=True)
+class EnvIssue:
+    kind: str
+    detail: str
+
+
 @dataclass
 class Report:
     uncommitted: List[FileChange] = field(default_factory=list)
@@ -47,3 +60,5 @@ class Report:
     stale_branches: List[Branch] = field(default_factory=list)
     events: List[Event] = field(default_factory=list)
     last_commit_date: Optional[str] = None
+    hotspots: List[Hotspot] = field(default_factory=list)
+    env_issues: List[EnvIssue] = field(default_factory=list)

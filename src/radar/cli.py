@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import json
 import os
+import re
+import subprocess
 import sys
 from typing import List, Optional, Sequence
 
@@ -20,8 +24,10 @@ from .git import (
 )
 from .models import Report
 from .render_ascii import render_terminal
+from .signals.cochange import find_hotspots
 from .signals.deletions import find_large_deletions
 from .signals.deps import find_dep_changes
+from .signals.env import find_env_issues
 from .signals.reverts import find_reverts
 from .signals.todos import find_todos
 from .tests_artifacts import find_failing
@@ -41,6 +47,8 @@ except ImportError:  # pragma: no cover - depends on the environment
 STALE_DAYS = 30
 DEFAULT_COMMITS = 30
 DEFAULT_BRANCHES = frozenset({"main", "master", "trunk"})
+TEST_TIMEOUT = 120
+PYTEST_FAILED_RE = re.compile(r"^\s*FAILED\s+(\S+)", re.MULTILINE)
 
 
 def _mtime(cwd: os.PathLike[str] | str, path: str) -> float:
@@ -48,6 +56,74 @@ def _mtime(cwd: os.PathLike[str] | str, path: str) -> float:
         return os.path.getmtime(os.path.join(os.fspath(cwd), path))
     except OSError:
         return -1.0
+
+
+def _has_pytest(cwd: str) -> bool:
+    return any(
+        os.path.isfile(os.path.join(cwd, name))
+        for name in ("pyproject.toml", "pytest.ini")
+    ) or os.path.isdir(os.path.join(cwd, "tests"))
+
+
+def _has_npm_test(cwd: str) -> bool:
+    try:
+        with open(os.path.join(cwd, "package.json"), encoding="utf-8") as handle:
+            package = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    scripts = package.get("scripts") if isinstance(package, dict) else None
+    if not isinstance(scripts, dict):
+        return False
+    test_script = scripts.get("test")
+    return isinstance(test_script, str) and bool(test_script.strip())
+
+
+def _detect_test_command(cwd: str):
+    if _has_pytest(cwd):
+        return "pytest", [sys.executable, "-m", "pytest", "-q", "--tb=no"]
+    if _has_npm_test(cwd):
+        return "npm", ["npm", "test"]
+    return None
+
+
+def run_repo_tests(cwd: str) -> List[str]:
+    """Run one detected test command and return failures; never writes files."""
+    detected = _detect_test_command(cwd)
+    if detected is None:
+        print("radar: no test runner detected")
+        return []
+
+    kind, command = detected
+    print("running tests...")
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=TEST_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return [f"{kind} (timed out after {TEST_TIMEOUT}s)"]
+    except OSError as exc:
+        return [f"{kind} (could not run: {exc.__class__.__name__})"]
+
+    output = re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout or "")
+    if kind == "pytest":
+        failures = sorted(set(PYTEST_FAILED_RE.findall(output)))
+        if failures:
+            return failures
+        if proc.returncode != 0:
+            return [f"pytest (exit code {proc.returncode})"]
+        return []
+
+    if proc.returncode != 0:
+        return [f"npm test (exit code {proc.returncode})"]
+    return []
 
 
 def build_report(
@@ -89,6 +165,8 @@ def build_report(
         dirty_by_mtime,
         last_subject,
     )
+    report.hotspots = find_hotspots(cwd)
+    report.env_issues = find_env_issues(cwd)
 
     return report
 
@@ -167,6 +245,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dest="no_cache",
         help="skip reading and writing the report cache",
     )
+    parser.add_argument(
+        "--diagram",
+        action="store_true",
+        help="include a plain-ASCII timeline diagram in the prompt",
+    )
+    parser.add_argument(
+        "--run-tests",
+        action="store_true",
+        dest="run_tests",
+        help="run the project's test suite and include failures",
+    )
     args = parser.parse_args(argv)
 
     cwd = os.path.abspath(args.path)
@@ -176,9 +265,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.commits < 0:
         parser.error("--commits must be zero or greater")
 
+    test_failures: List[str] = []
+    if args.run_tests:
+        test_failures = run_repo_tests(cwd)
+
     key: Optional[str] = None
     cached_report: Optional[Report] = None
-    if not args.no_cache:
+    if not args.no_cache and not args.run_tests:
         try:
             key = cache.compute_key(cwd)
             if args.commits != DEFAULT_COMMITS:
@@ -201,6 +294,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache.save(cwd, key, report)
             except Exception:
                 pass
+    if test_failures:
+        report.failing_tests = sorted(set(report.failing_tests) | set(test_failures))
 
     root = toplevel(cwd) or cwd
     repo_name = os.path.basename(os.path.normpath(root)) or os.path.basename(
@@ -213,7 +308,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cap = min(requested, HARD_MAX)
 
     if args.full:
-        text = render(report, FULL)
+        full_limits = dataclasses.replace(FULL, diagram=args.diagram)
+        text = render(report, full_limits)
         size = est_tokens(text)
         trimmed_items: List[str] = []
         print(
@@ -221,9 +317,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"~{size} tokens (cap {cap:,})"
         )
     else:
-        text, limits = fit(report, render, budget=requested)
+        text, limits = fit(
+            report, render, budget=requested, diagram=args.diagram
+        )
         size = est_tokens(text)
         trimmed_items = trimmed(report, limits)
+        if args.diagram and not limits.diagram:
+            trimmed_items.append("diagram")
         if size > cap:
             print("warning: budget below minimum size")
 

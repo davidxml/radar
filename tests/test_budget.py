@@ -14,7 +14,7 @@ from radar.budget import (
     trimmed,
 )
 from radar.export import render_md, render_xml
-from radar.models import Branch, Event, FileChange, Report, Todo
+from radar.models import Branch, EnvIssue, Event, FileChange, Hotspot, Report, Todo
 
 RENDERERS = [render_xml, render_md]
 RENDER_IDS = ["xml", "md"]
@@ -56,12 +56,22 @@ def _huge_report() -> Report:
         f"tests/test_{index}.py::test_case_" + "f" * 150
         for index in range(30)
     ]
+    hotspots = [
+        Hotspot(a=_long_path(index), b=_long_path(index + 1), count=100 - index)
+        for index in range(60)
+    ]
+    env_issues = [
+        EnvIssue(kind="missing_key", detail=f"KEY_{index} is missing or empty in .env")
+        for index in range(40)
+    ]
     return Report(
         uncommitted=uncommitted,
         todos=todos,
         failing_tests=failing_tests,
         stale_branches=branches,
         events=events,
+        hotspots=hotspots,
+        env_issues=env_issues,
     )
 
 
@@ -113,3 +123,31 @@ def test_full_limits_do_not_trim_a_huge_report(huge_report):
     text = render_xml(huge_report, FULL)
 
     assert est_tokens(text) > HARD_MAX
+
+
+def test_new_sections_drop_to_zero_on_later_ladder_rungs():
+    assert LADDER[0].hotspots == 3
+    assert LADDER[0].env == 5
+    assert all(rung.hotspots == 0 and rung.env == 0 for rung in LADDER[4:])
+
+
+def test_diagram_is_dropped_before_events():
+    report = _huge_report()
+
+    def render(report, limits):
+        base = "x" * (100 if limits.events == LADDER[0].events else 50)
+        if limits.diagram:
+            base += "y" * 400
+        return base
+
+    _text, limits = fit(report, render, budget=100, diagram=True)
+
+    assert limits.events == LADDER[0].events
+    assert limits.diagram is False
+
+
+@pytest.mark.parametrize("render", RENDERERS, ids=RENDER_IDS)
+def test_new_sections_still_fit_the_hard_max(huge_report, render):
+    text, _limits = fit(huge_report, render)
+
+    assert est_tokens(text) <= HARD_MAX

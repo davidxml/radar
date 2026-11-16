@@ -14,6 +14,28 @@ INSTR_SHORT = (
     "Senior engineer on this project. [e]=evidence, [i]=inferred; "
     "confirm [i] before relying on it."
 )
+DIAGRAM_WIDTH = 60
+DIAGRAM_MAX_LINES = 20
+
+
+def render_diagram(report: Report, width: int = DIAGRAM_WIDTH,
+                   max_lines: int = DIAGRAM_MAX_LINES) -> str:
+    """Draw a compact, label-free activity line using only ASCII symbols."""
+    events = pick_events(report.events, 15)
+    chain = "-".join(">" if event.kind == "stop" else "*" for event in events)
+    if not chain:
+        chain = ">"
+
+    inner = max(1, width - 4)
+    rows = [chain[start:start + inner] for start in range(0, len(chain), inner)]
+    rows = rows[: max(1, max_lines - 2)]
+
+    top = "+" + "-" * (width - 2) + "+"
+    lines = [top]
+    for row in rows:
+        lines.append("| " + row[:inner].ljust(inner) + " |")
+    lines.append(top)
+    return "\n".join(lines[:max_lines])
 
 
 def pick_events(events: List[Event], n: int) -> List[Event]:
@@ -36,7 +58,9 @@ def _select(report: Report, lim: Limits):
     tests = report.failing_tests[: lim.tests]
     branches = sorted(report.stale_branches, key=lambda b: b.days_old)[: lim.branches]
     events = pick_events(report.events, lim.events)
-    return files, todos, tests, branches, events
+    hotspots = report.hotspots[: lim.hotspots]
+    env_issues = report.env_issues[: lim.env]
+    return files, todos, tests, branches, events, hotspots, env_issues
 
 
 def _block(tag: str, lines: List[str], total: int) -> List[str]:
@@ -47,8 +71,8 @@ def _block(tag: str, lines: List[str], total: int) -> List[str]:
     return [f"<{tag}{attr}>", *lines, f"</{tag}>"]
 
 
-def render_xml(report: Report, lim: Limits) -> str:
-    files, todos, tests, branches, events = _select(report, lim)
+def render_xml(report: Report, lim: Limits, diagram: bool = False) -> str:
+    files, todos, tests, branches, events, hotspots, env_issues = _select(report, lim)
 
     stopped = (
         _block("uncommitted", [
@@ -71,9 +95,29 @@ def render_xml(report: Report, lim: Limits) -> str:
         out += ["<stopped_at>", *stopped, "</stopped_at>"]
     if events:
         out += ["<timeline>", *[escape(event_line(e)) for e in events], "</timeline>"]
+    if hotspots:
+        out += [
+            "<hotspots>",
+            *[
+                f'<pair a={quoteattr(h.a)} b={quoteattr(h.b)} n="{h.count}"/>'
+                for h in hotspots
+            ],
+            "</hotspots>",
+        ]
+    if env_issues:
+        out += [
+            "<env_blockers>",
+            *[
+                f'<issue kind={quoteattr(issue.kind)}>{escape(issue.detail)}</issue>'
+                for issue in env_issues
+            ],
+            "</env_blockers>",
+        ]
     out.append(
         f"<instructions>{escape(INSTR_SHORT if lim.short_instructions else INSTR_FULL)}</instructions>"
     )
+    if lim.diagram or diagram:
+        out += ["<diagram>", escape(render_diagram(report)), "</diagram>"]
     out.append("</project_handoff>")
     return "\n".join(out)
 
@@ -87,8 +131,8 @@ def _md(title: str, items: List[str], total: int) -> List[str]:
     return out + [""]
 
 
-def render_md(report: Report, lim: Limits) -> str:
-    files, todos, tests, branches, events = _select(report, lim)
+def render_md(report: Report, lim: Limits, diagram: bool = False) -> str:
+    files, todos, tests, branches, events, hotspots, env_issues = _select(report, lim)
     out = ["# Project handoff", ""]
     out += _md("Uncommitted", [f"{f.status} {shorten(f.path, lim.path_chars)}" for f in files],
                len(report.uncommitted))
@@ -99,5 +143,12 @@ def render_md(report: Report, lim: Limits) -> str:
     out += _md("Stale branches", [f"{b.name[:40]} ({b.days_old}d)" for b in branches],
                len(report.stale_branches))
     out += _md("Timeline", [event_line(e) for e in events], len(events))
-    out += ["## Instructions", INSTR_SHORT if lim.short_instructions else INSTR_FULL]
+    out += _md("Hotspots", [f"{shorten(h.a, lim.path_chars)} + "
+                            f"{shorten(h.b, lim.path_chars)} ({h.count}x)"
+                            for h in hotspots], len(report.hotspots))
+    out += _md("Env blockers", [f"{issue.kind}: {issue.detail}"
+                                for issue in env_issues], len(report.env_issues))
+    out += ["## Instructions", INSTR_SHORT if lim.short_instructions else INSTR_FULL, ""]
+    if lim.diagram or diagram:
+        out += ["<diagram>", render_diagram(report), "</diagram>", ""]
     return "\n".join(out)

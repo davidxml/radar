@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import xml.etree.ElementTree as ET
 
 from radar.budget import FULL
-from radar.export import event_line, pick_events, render_md, render_xml
-from radar.models import Branch, Event, FileChange, Report, Todo
+from radar.export import event_line, pick_events, render_diagram, render_md, render_xml
+from radar.models import Branch, EnvIssue, Event, FileChange, Hotspot, Report, Todo
 
 TRICKY = "A & B < C > D \"quoted\" 'single' café 日本語"
 
@@ -126,3 +127,51 @@ def test_pick_events_returns_chronological_order():
     )
 
     assert pick_events([revert, stop], 2) == [stop, revert]
+
+
+def test_hotspots_and_env_blockers_render_in_xml_and_markdown():
+    report = Report(
+        hotspots=[Hotspot(a="src/a.py", b="src/b.py", count=7)],
+        env_issues=[EnvIssue(kind="missing_key", detail="API_KEY is missing or empty in .env")],
+    )
+
+    root = ET.fromstring(render_xml(report, FULL))
+    pair = root.find(".//hotspots/pair")
+    issue = root.find(".//env_blockers/issue")
+    assert pair is not None
+    assert (pair.get("a"), pair.get("b"), pair.get("n")) == ("src/a.py", "src/b.py", "7")
+    assert issue is not None
+    assert issue.get("kind") == "missing_key"
+    assert issue.text == "API_KEY is missing or empty in .env"
+
+    md = render_md(report, FULL)
+    assert "## Hotspots" in md
+    assert "## Env blockers" in md
+    assert "API_KEY" in md
+
+
+def test_diagram_is_ascii_and_within_limits():
+    report = Report(
+        events=[
+            Event(date="2026-01-01", kind="other", text="first", conf="e"),
+            Event(date="2026-01-02", kind="stop", text="stopped", conf="e"),
+        ]
+    )
+    diagram = render_diagram(report)
+    lines = diagram.splitlines()
+
+    assert diagram.isascii()
+    assert set(diagram) <= set("-|*+> \n")
+    assert len(lines) <= 20
+    assert max(len(line) for line in lines) <= 60
+    assert "*" in diagram
+    assert ">" in diagram
+
+
+def test_diagram_appears_only_when_requested():
+    report = Report(events=[Event(date="2026-01-01", kind="other", text="x", conf="e")])
+
+    assert "<diagram>" not in render_xml(report, FULL)
+    with_diagram = dataclasses.replace(FULL, diagram=True)
+    assert "<diagram>" in render_xml(report, with_diagram)
+    assert "<diagram>" in render_md(report, with_diagram)

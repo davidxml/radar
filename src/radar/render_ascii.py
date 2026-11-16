@@ -7,7 +7,15 @@ from .export import pick_events
 from .models import Report
 
 MARK = {"stop": ">>", "revert": "<-", "swap": "<>", "deletion": "--", "scaffold": "++"}
-CAPS = {"files": 10, "todos": 10, "tests": 5, "branches": 5, "events": 15}
+CAPS = {
+    "files": 10,
+    "todos": 10,
+    "tests": 5,
+    "branches": 5,
+    "events": 15,
+    "hotspots": 3,
+    "env": 5,
+}
 GAP_DAYS = 14
 
 
@@ -51,7 +59,7 @@ def render_terminal(report: Report, repo_name: str,
     files = sorted(report.uncommitted, key=lambda f: -f.lines_changed)[: CAPS["files"]]
     branches = sorted(report.stale_branches, key=lambda b: -b.days_old)[: CAPS["branches"]]
     pending = bool(report.uncommitted or report.todos or report.failing_tests
-                   or report.stale_branches)
+                   or report.stale_branches or report.env_issues)
     if not pending:
         out += ["  Nothing pending: clean tree, no recent TODOs.", ""]
     _list(out, "Uncommitted", [f"{f.status:<2} {shorten(f.path, 56)}" for f in files],
@@ -63,6 +71,14 @@ def render_terminal(report: Report, repo_name: str,
           len(report.failing_tests))
     _list(out, "Stale branches", [f"{b.name[:40]}  {b.days_old}d" for b in branches],
           len(report.stale_branches))
+    _list(out, "Hotspots",
+          [f"{shorten(h.a, 28)} + {shorten(h.b, 28)}  {h.count}x"
+           for h in report.hotspots[: CAPS["hotspots"]]],
+          len(report.hotspots))
+    _list(out, "Env blockers",
+          [f"{issue.kind}: {issue.detail[:60]}"
+           for issue in report.env_issues[: CAPS["env"]]],
+          len(report.env_issues))
 
     events = pick_events(report.events, CAPS["events"])
     if events:

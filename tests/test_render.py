@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from radar.models import Branch, Event, FileChange, Report, Todo
+from radar.models import Branch, EnvIssue, Event, FileChange, Hotspot, Report, Todo
 from radar.render_ascii import render_terminal
 
 
@@ -117,3 +117,18 @@ def test_a_report_without_events_or_last_commit_does_not_crash():
     assert "last commit unknown" in out
     assert "Nothing pending" in out
     assert "TIMELINE" not in out
+
+
+def test_terminal_renders_hotspots_and_env_blockers():
+    report = Report(
+        hotspots=[Hotspot(a="src/a.py", b="src/b.py", count=4)],
+        env_issues=[EnvIssue(kind="missing_key", detail="API_KEY is missing or empty in .env")],
+    )
+
+    out = render_terminal(report, "demo")
+
+    assert "Hotspots (1)" in out
+    assert "src/a.py + src/b.py" in out
+    assert "Env blockers (1)" in out
+    assert "API_KEY" in out
+    assert "Nothing pending" not in out
